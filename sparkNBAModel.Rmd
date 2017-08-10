@@ -1,0 +1,209 @@
+---
+title: "NBAProjectSparklyr"
+author: "Jason"
+date: "May 26, 2017"
+output: html_document
+---
+#   ~     Pre-Processing      ~       .
+###    ~   Modifying   ~    .
+```{r}
+NBAALL <- read.csv("NBALabeledTrain.csv",header = TRUE) %>% 
+  mutate(WinRate = W/GP) %>% 
+  mutate(FG=FG/100) %>% 
+  mutate(X3P=X3P/100) %>% 
+  mutate(FT=FT/100)
+NBAALL <- NBAALL %>% mutate(ID=seq(1,dim(NBAALL)[1],1)) 
+attach(NBAALL)
+NBAALL <- NBAALL[,c(3,33,32,6:7,10:11,13:14,16:17,19:22,24:31)]
+
+NBA <- read.csv("NBALabeledTrain.csv",header = TRUE) %>% 
+  filter(Season <1510) %>% 
+  mutate(WinRate = W/GP) %>% 
+  mutate(FG=FG/100) %>% 
+  mutate(X3P=X3P/100) %>% 
+  mutate(FT=FT/100)
+NBA <- NBA %>% mutate(ID=seq(1,dim(NBA)[1],1)) 
+attach(NBA)
+NBA <- NBA[,c(3,33,32,6:7,10:11,13:14,16:17,19:22,24:31)]
+
+NBAValidation <- read.csv("NBALabeledTrain.csv",header = TRUE) %>%
+  filter(Season > 1510) %>% 
+  mutate(WinRate = W/GP) %>% 
+  mutate(FG=FG/100) %>% 
+  mutate(X3P=X3P/100) %>% 
+  mutate(FT=FT/100)
+NBAValidation <- NBAValidation %>% mutate(ID=seq(1,dim(NBAValidation)[1],1)) 
+NBAValidation <- NBAValidation[,c(3,33,32,6:7,10:11,13:14,16:17,19:22,24:31)]
+
+
+NBATes16 <- read.csv("NBAUnlabeledTest.csv",header = TRUE) %>% 
+  mutate(WinRate = W/GP) %>% 
+  mutate(FG=FG/100) %>% 
+  mutate(X3P=X3P/100) %>% 
+  mutate(FT=FT/100)
+NBATes16 <- NBATes16 %>% mutate(ID=seq(1,dim(NBATes16)[1],1)) 
+NBATes16 <- NBATes16[,c(3,33,32,6:7,10:11,13:14,16:17,19:22,24:31,4,5)]
+
+```
+####    ~   Change Variables Type   ~    .
+```{r}
+NBA$AllTeam <- as.factor(NBA$AllTeam)
+NBAValidation$AllTeam <- as.factor(NBAValidation$AllTeam)
+
+NBAStd$AllTeam <- as.factor(NBAStd$AllTeam)
+NBAValidationStd$AllTeam <- as.factor(NBAValidationStd$AllTeam)
+
+```
+
+###    ~   Standardised   ~    .
+```{r}
+NBAStd <- NBA
+for(i in 3:23){
+  NBAStd[,i] = (NBAStd[,i]-mean(NBAStd[,i]))/sd(NBAStd[,i])
+}
+
+NBAValidationStd <- NBAValidation
+for(i in 3:23){
+  NBAValidationStd[,i] = (NBAValidationStd[,i]-mean(NBAValidationStd[,i]))/sd(NBAValidationStd[,i])
+}
+
+
+NBATes16Std <- NBATes16
+for(i in 3:23){
+  NBATes16Std[,i] = (NBATes16Std[,i]-mean(NBATes16Std[,i]))/sd(NBATes16Std[,i])
+}
+
+
+NBAALLStd <- NBAALL
+for(i in 3:23){
+  NBAALLStd[,i] = (NBAALLStd[,i]-mean(NBAALLStd[,i]))/sd(NBAALLStd[,i])
+}
+
+```
+####    ~   Missing Values   ~    .    
+```{r}
+NAsCheck <- data.frame(Variables=names(NBA),NAs=rep(0,dim(NBA)[2]))
+for(i in 1:dim(NBA)[2]){
+  NAsCheck[i,2] <- summary(is.na(NBA[,i]))[3]
+}
+NAsCheck
+```
+#     ~     Model       ~         .
+##        ~       Sparklyr.Connect        ~       .
+```{r}
+library(sparklyr)
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(ggplot2)
+# connect to Spark
+sc <- spark_connect(master="local")
+
+# paste data to spark
+nba_tbl_tra <- copy_to(sc, NBAALL,"NBATrain")
+nba_tbl_tra_std <- copy_to(sc, NBAALLStd,"NBATrainStd")
+nba_tbl_test <- copy_to(sc, NBATes16,"NBATest")
+nba_tbl_test_std <- copy_to(sc, NBATes16Std,"NBATestStd")
+
+src_tbls(sc)
+```
+##        ~       Models        ~           .
+###         ~       Build Model        ~         .
+```{r}
+NBA_Mod<- formula(AllTeam~WinRate+AGE+GP+MIN+PTS+FGA+FG+X3PA+X3P+
+                    FTA+FT+OREB+DREB+AST+TOV+STL+BLK+PF+DD2+TD3+PoNeg)
+
+# Logistic Regression
+nba_LogReg <- ml_logistic_regression(nba_tbl_tra_std,NBA_Mod)
+# Decision Trees
+nba_DecTre <- ml_decision_tree(nba_tbl_tra_std,NBA_Mod)
+# Random Forest
+nba_RandFore <- ml_random_forest(nba_tbl_tra_std,NBA_Mod)
+# Gradient Boosting Trees
+nba_GraBooTre <- ml_gradient_boosted_trees(nba_tbl_tra_std,NBA_Mod)
+# Naives Bayesians
+# nba_NaivBayy <- ml_naive_bayes(nba_tbl_tra,NBA_Mod)
+# Neurual Networks
+nba_NeuNet <- ml_multilayer_perceptron(nba_tbl_tra_std,NBA_Mod,layers = c(21,21,2))
+
+```
+
+###         ~       Test        ~         .
+```{r}
+NBA_ALL_Models <- list(
+  "Logistic" = nba_LogReg,
+  "Decision Tree" = nba_DecTre,
+  "Random Forest" = nba_RandFore,
+  "Gradient Boosted Trees" = nba_GraBooTre,
+  "Neural Net" = nba_NeuNet)
+
+models_test_set <- function(model,data=nba_tbl_test_std){
+  pred <- sdf_predict(model,data) 
+  select(pred,AllTeam,prediction)
+}
+
+models_results <- lapply(NBA_ALL_Models,models_test_set)
+
+```
+###     ~   Model Lift      ~     .
+```{r}
+# Compare the Results
+# Lift function
+calculate_lift <- function(scored_data){
+  scored_data %>%
+    mutate(bin = ntile(desc(prediction), 10)) %>% 
+    group_by(bin) %>% 
+    summarize(count = sum(AllTeam)) %>% 
+    mutate(prop = count / sum(count)) %>% 
+    arrange(bin) %>% 
+    mutate(prop = cumsum(prop)) %>% 
+    select(-count) %>% 
+    collect() %>% 
+    as.data.frame()
+}
+
+# Initialize results
+ml_gains <- data.frame(bin = 1:10, prop = seq(0, 1, len = 10), model = "Base")
+
+# Calculate lift
+for(i in names(models_results)){
+  ml_gains <- models_results[[i]] %>%
+    calculate_lift %>%
+    mutate(model = i) %>%
+    rbind(ml_gains, .)
+}
+
+# Plot results
+ggplot(ml_gains, aes(x = bin, y = prop, colour = model)) +
+  geom_point() + geom_line() +
+  ggtitle("Lift Chart for Predicting Survival - Test Data Set") + 
+  xlab("") + ylab("")
+
+```
+####    AUC & accuracy      ~       .
+```{r}
+NBA_pred_accuracy <- function(data,cutpoint=0.5){
+  data %>% 
+    mutate(prediction=if_else(prediction > cutpoint, 1.0,0.0)) %>% 
+    ml_classification_eval("prediction","AllTeam","accuracy")
+}
+
+Results_Table <- data.frame(
+  model = names(models_results),
+  AUC = 100*sapply(models_results,ml_binary_classification_eval,
+                 "AllTeam","prediction"),
+  Accuracy = 100*sapply(models_results,NBA_pred_accuracy),
+  row.names = NULL,
+  stringsAsFactors = FALSE)
+
+gather(Results_Table,metric,value,AUC,Accuracy) %>% 
+  ggplot(aes(reorder(model,value),value,fill=metric)) +
+  geom_bar(stat = "identity",position="dodge") +
+  coord_flip()
+  
+
+```
+
+
+
+
